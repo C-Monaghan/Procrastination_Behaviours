@@ -1,0 +1,410 @@
+---
+title: "Alcohol Analysis"
+author: "Cormac Monaghan"
+toc: true
+format:
+  html:
+    page-layout: full
+    html-math-method: katex
+    code-tools: true
+    self-contained: true
+    code-fold: true
+    code-summary: "Show the code"
+execute:
+  warning: false
+---
+
+This document performs exploratory analyses on the alcohol related drinking behaviors of older adults who completed a procrastination measure from the HRS.
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(mgcv)
+library(gamlss)
+
+path_data <- "./01__Data/02__Processed/"
+
+health_data <- readxl::read_xlsx(here::here(path_data, "Health_data.xlsx"))
+
+```
+
+# Exploratory Plots
+```{r plots, fig.show = 'hold', fig.width = 12}
+# Overall number of people who have drank in the HRS ---------------------------
+health_data %>%
+  select(Drink_ever) %>%
+  mutate(Drink_ever = ifelse(Drink_ever == 1, "Yes", "No"),
+         Drink_ever = factor(Drink_ever, levels = c("Yes", "No"))) %>%
+  ggplot(aes(x = Drink_ever, fill = Drink_ever)) +
+  geom_bar(width = 0.75, colour = "black") +
+  geom_text(stat = "count", aes(label = after_stat(count)), 
+            vjust = -0.5, position = position_dodge(width = 0.75)) +
+  scale_y_continuous(expand = expansion(mult = 0.1)) +
+  labs(title = "Do you ever drink any alcoholic beverages",
+       x = "", y = "Count") +
+  theme_minimal() +
+  ggeasy::easy_center_title() +
+  ggeasy::easy_remove_legend() +
+  colorspace::scale_fill_discrete_qualitative(palette = "Set 3") +
+  theme(
+    plot.title = element_text(size = 14),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    strip.text = element_text(size = 12))
+
+# Days Drinking and Not Drinking -----------------------------------------------
+health_data %>%
+  select(Days_drink, Days_no_drink) %>%
+  rename(`Days drinking` = "Days_drink", `Days not drinking` = "Days_no_drink") %>%
+  tidyr::pivot_longer(cols = everything(),
+                      names_to = "Drink",
+                      values_to = "Amount") %>%
+  ggplot(aes(x = Amount, fill = Drink)) +
+  geom_bar(colour = "black", width = 0.75) +
+  scale_x_continuous(breaks = seq(0, 7, by = 1)) +
+  labs(title = "How many days per week have you had any alcohol to drink (in last 3 months)",
+       x = "", y = "Count") +
+  facet_wrap(~ Drink) +
+  theme_minimal() +
+  ggeasy::easy_center_title() +
+  ggeasy::easy_remove_legend() +
+  colorspace::scale_fill_discrete_qualitative(palette = "Set 3") +
+  theme(
+    plot.title = element_text(size = 14),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    strip.text = element_text(size = 12))
+
+# Proportion of days drinking or not drinking
+health_data %>%
+  select(Total_procrastination, Days_drink, Days_no_drink) %>%
+  tidyr::pivot_longer(cols = c(Days_drink, Days_no_drink),
+                      names_to = "Drink", 
+                      values_to = "Days") %>%
+  ggplot(aes(x = Total_procrastination, y = Days / 7, colour = Drink)) +
+  geom_jitter(height = 0.05, width = 0.05, size = 2, alpha = 0.8) +
+  scale_x_continuous(breaks = seq(0, 60, by = 10), labels = scales::comma) +
+  facet_wrap(~Drink, labeller = as_labeller(c("Days_drink" = "Days drinking", "Days_no_drink" = "Days not drinking"))) +
+  labs(title = "Proportion of days drinking / not drinking", 
+       x = "Total Procrastination", y = "Prob") +
+  theme_minimal() +
+  ggeasy::easy_center_title() +
+  ggeasy::easy_remove_legend() +
+  colorspace::scale_color_discrete_qualitative(palette = "Dark 3") +
+  theme(
+    plot.title = element_text(size = 14),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    strip.text = element_text(size = 12))
+
+# Mean days drinking / not drinking by procrastination
+health_data %>%
+  select(Days_drink, Days_no_drink, Total_procrastination) %>%
+  group_by(Total_procrastination) %>%
+  summarise(`Days Drinking` = mean(Days_drink, na.rm = TRUE),
+            `Days not Drinking` = mean(Days_no_drink, na.rm = TRUE)) %>%
+  ungroup() %>%
+  tidyr::pivot_longer(cols = -Total_procrastination,
+                      names_to = "Drink",
+                      values_to = "Days") %>%
+  ggplot(aes(x = Total_procrastination, y = Days, colour = Drink)) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = seq(0, 60, by = 10), labels = scales::comma) +
+  scale_y_continuous(breaks = seq(0, 7, by = 1), labels = scales::comma) +
+  labs(title = "Mean days drinking / not drinking by procrastination",
+       x = "Total Procrastination",
+       y = "Mean Days") +
+  theme_minimal() +
+  facet_wrap(~ Drink, labeller = as_labeller(c(`Days Drinking` = "Days drinking", `Days not Drinking` = "Days not drinking"))) +
+  ggeasy::easy_center_title() +
+  ggeasy::easy_remove_legend() +
+  colorspace::scale_color_discrete_qualitative(palette = "Dark 3") +
+  theme(
+    plot.title = element_text(size = 14),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    strip.text = element_text(size = 12))
+```
+
+
+# Modelling (Initial Attempt)
+## Binomial GAM
+
+Initially, we try fitting our data with a binomial generalised additive model with a logit link, where $\mu$ is a $p \times 2$ matrix in the form:
+
+\
+\begin{array}{cc}
+g(\mu) = \alpha + f(x) \qquad & \mu = \begin{bmatrix}
+5 & 2 \\
+0 & 7 \\
+\vdots & \vdots \\
+\end{bmatrix}
+\end{array}
+\
+
+### Fitting & Output
+```{r binomial-model}
+# Fitting Model
+binomial_gam <- gam(cbind(Days_no_drink, Days_drink) ~ s(Total_procrastination),
+                    data = health_data,
+                    family = binomial(link = "logit"),
+                    method = "REML")
+
+# Model output
+broom::tidy(binomial_gam) %>%
+  as.data.frame() %>%
+  kableExtra::kbl(align = 'c') %>%
+  kableExtra::kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+### Diagnostics
+```{r diagnostics-binomal, fig.width = 12}
+DHARMa::simulateResiduals(fittedModel = binomial_gam, seed = 123, plot = TRUE)
+```
+
+**Bad fitting model**
+
+## Finding Right Distribution
+
+We will use the `fitdistrplus` package to try and find a suitable distribution for our data
+```{r fitdistrplus, fig.width=12}
+fitdistr_data <- health_data %>%
+  select(Days_no_drink) %>%
+  filter(complete.cases(.)) %>%
+  mutate(Days_no_drink = Days_no_drink / 7)
+
+fitdistrplus::descdist(fitdistr_data$Days_no_drink, discrete = FALSE, print = FALSE)
+```
+
+Let's try using a **Beta Distribution**
+
+# Modelling (Second Attempt)
+## Beta Binomial (BB)
+
+The probabilities of the BB $\sim (n, \mu, \sigma)$ distribution can be described by
+
+\
+\begin{equation*}
+P(Y = y \mid n, \mu, \sigma) = \binom{n}{y} \frac{B(y + \mu/\sigma, n + (1 - \mu)/\sigma - y)}{B(\mu/\sigma, (1 - \mu)/\sigma)}
+\end{equation*}
+\
+
+for $y = 0, 1, \dots, n$, where $0 < \mu < 1, \sigma > 0$ and $n$ is a positive integer.
+
+For our BB model we will fit 3 different models: **linear, cubic spline, and penalised regression spline**
+
+```{r data-processing}
+gamlss_data <- health_data %>%
+  select(Days_drink, Days_no_drink, Total_procrastination) %>%
+  filter(complete.cases(.))
+```
+
+### Linear Fit
+#### Model Output
+```{r bb-linear}
+fit_1 <- gamlss(
+  formula = cbind(Days_no_drink, Days_drink) ~ Total_procrastination,
+  sigma.formula = ~ Total_procrastination,
+  family = BB(mu.link = "logit", sigma.link = "log"),
+  control = gamlss.control(trace = FALSE),
+  data = gamlss_data)
+
+summary(fit_1)
+```
+
+#### Diagnostics
+```{r bb-linear-diagnostics, fig.width=12, fig.show='hold'}
+plot(fit_1, summaries = FALSE)
+
+childsds::wormplot_gg(m = fit_1, y.limits = c(-1.5, 1.5))
+```
+
+### Cublic Spline Fit
+```{r bb-cublic}
+fit_2 <- gamlss(
+  formula = cbind(Days_no_drink, Days_drink) ~ cs(Total_procrastination),
+  sigma.formula = ~ Total_procrastination,
+  family = BB(mu.link = "logit", sigma.link = "log"),
+  control = gamlss.control(trace = FALSE),
+  data = gamlss_data)
+
+summary(fit_2)
+```
+
+#### Diagnostics
+```{r bb-cubic-diagnostics, fig.width=12, fig.show='hold'}
+plot(fit_2, summaries = FALSE)
+
+childsds::wormplot_gg(m = fit_2, y.limits = c(-1.5, 1.5))
+```
+
+### Penalised Regression Fit
+```{r bb-penalised}
+fit_3 <- gamlss(
+  formula = cbind(Days_no_drink, Days_drink) ~ pb(Total_procrastination),
+  sigma.formula = ~ Total_procrastination,
+  family = BB(mu.link = "logit"),
+  control = gamlss.control(trace = FALSE),
+  data = gamlss_data)
+```
+
+#### Diagnostics
+```{r bb-penalised-diagnostics, fig.width=12, fig.show='hold'}
+plot(fit_3, summaries = FALSE)
+
+childsds::wormplot_gg(m = fit_3, y.limits = c(-1.5, 1.5))
+```
+
+## Predictions
+### Generating predictions
+```{r predictions}
+# Generating test data
+new_data <- expand.grid(Total_procrastination = seq(0, 60, length = 200))
+
+# Generating predictions
+li_preds <- predict(fit_1, newdata = new_data, type = "response", data = gamlss_data)
+cs_preds <- predict(fit_2, newdata = new_data, type = "response", data = gamlss_data)
+pb_preds <- predict(fit_3, newdata = new_data, type = "response", data = gamlss_data)
+
+# Adding to test data
+new_data$Linear <- li_preds
+new_data$`Cubic Spline` <- cs_preds
+new_data$`Penalised Beta Spline` <- pb_preds
+
+# Pivoting to long format
+new_data <- new_data %>%
+  tidyr::pivot_longer(
+    cols = c(Linear, `Cubic Spline`, `Penalised Beta Spline`),
+    names_to = "Model",
+    values_to = "Value") %>%
+    mutate(
+    Model = factor(
+      Model, levels = c("Linear", "Cubic Spline", "Penalised Beta Spline")))
+
+# Outputting
+new_data %>%
+  rename(
+    `Total Procrastination` = Total_procrastination, 
+    "Prediction" = Value) %>%
+  head() %>%
+  kableExtra::kbl(align = 'c') %>%
+  kableExtra::kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+### Plotting predictions
+```{r plotting-predictions, fig.width = 12, fig.show = 'hold'}
+plotting_data <- health_data %>%
+  select(Days_drink, Days_no_drink, Total_procrastination) %>%
+  group_by(Total_procrastination) %>%
+  summarise(Days_drinking = mean(Days_drink, na.rm = TRUE),
+            Days_not_drinking = mean(Days_no_drink, na.rm = TRUE))
+
+# Plotting as a whole
+ggplot(data = new_data, aes(x = Total_procrastination, y = Value, colour = Model)) +
+  geom_line(linewidth = 1.5) +
+  geom_jitter(data = health_data, 
+              aes(x = Total_procrastination, y = Days_no_drink / 7, colour = NULL),
+              height = 0.05, width = 0.05, size = 1.25, alpha = 0.8) +
+  scale_x_continuous(breaks = seq(0, 60, by = 10), labels = scales::comma) +
+  labs(title = "BB GAMLSS Prediction",
+       x = "Total Procrastination",
+       y = "Prob(Not Drinking)") +
+  facet_wrap(~ Model) +
+  theme_minimal() +
+  ggeasy::easy_center_title() +
+  ggeasy::easy_remove_legend() +
+  colorspace::scale_color_discrete_qualitative(palette = "Dark 3") +
+  theme(
+    plot.title = element_text(size = 14),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    strip.text = element_text(size = 12))
+
+# Plotting mean
+ggplot(data = new_data, aes(x = Total_procrastination, y = Value, colour = Model)) +
+  geom_line(linewidth = 1.25) +
+  geom_point(data = plotting_data, 
+             aes(x = Total_procrastination, y = Days_not_drinking / 7, colour = NULL),
+             size = 2) +
+  scale_x_continuous(breaks = seq(0, 60, by = 10), labels = scales::comma) +
+  labs(title = "BB GAMLSS Prediction",
+       x = "Total Procrastination",
+       y = "Prob(Not Drinking [MEAN])") +
+  facet_wrap(~ Model) +
+  theme_minimal() +
+  ggeasy::easy_center_title() +
+  ggeasy::easy_remove_legend() +
+  colorspace::scale_color_discrete_qualitative(palette = "Dark 3") +
+  theme(
+    plot.title = element_text(size = 14),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    strip.text = element_text(size = 12))
+```
+
+
+```{r}
+# ZIBB -------------------------------------------------------------------------
+# Processing for GAMLSS -> Removing NA values
+# gamlss_data <- health_data %>%
+#   select(Days_drink, Days_no_drink, Total_procrastination) %>%
+#   filter(complete.cases(.))
+# 
+# # Fitting model (Simple)
+# fit_1 <- gamlss(formula = cbind(Days_no_drink, Days_drink) ~ Total_procrastination,
+#                 sigma.formula = ~ Total_procrastination,
+#                 nu.formula = ~ Total_procrastination,
+#                 family = ZIBB(mu.link = "logit"),
+#                 control = gamlss.control(trace = FALSE),
+#                 data = gamlss_data)
+# 
+# # Fitting model (Cubic Spline)
+# fit_2 <- gamlss(formula = cbind(Days_no_drink, Days_drink) ~ cs(Total_procrastination),
+#                 sigma.formula = ~ Total_procrastination,
+#                 nu.formula = ~ Total_procrastination,
+#                 family = ZIBB(mu.link = "logit"),
+#                 control = gamlss.control(trace = FALSE),
+#                 data = gamlss_data)
+# 
+# # Fitting model (Penalized Beta Spline)
+# fit_3 <- gamlss(formula = cbind(Days_no_drink, Days_drink) ~ pb(Total_procrastination),
+#                 sigma.formula = ~ Total_procrastination,
+#                 nu.formula = ~ Total_procrastination,
+#                 family = ZIBB(mu.link = "logit"),
+#                 control = gamlss.control(trace = FALSE),
+#                 data = gamlss_data)
+# 
+# # Making predictions -----------------------------------------------------------
+# test_data <- expand.grid(
+#   Total_procrastination = seq(0, 60, length = 200)
+# )
+# 
+# preds <- predict(fit_1, newdata = test_data, type = "response", data = gamlss_data)
+# cs_preds <- predict(fit_2, newdata = test_data, type = "response", data = gamlss_data)
+# pb_preds <- predict(fit_3, newdata = test_data, type = "response", data = gamlss_data)
+# 
+# test_data$Linear <- preds
+# test_data$`Cubic Spline` <- cs_preds
+# test_data$`Penalised Beta Spline` <- pb_preds
+# 
+# 
+# test_data %>%
+#   tidyr::pivot_longer(cols = c(Linear, `Cubic Spline`, `Penalised Beta Spline`),
+#                       names_to = "Prediction",
+#                       values_to = "Value") %>%
+#   ggplot(aes(x = Total_procrastination, y = Value, colour = Prediction)) +
+#   geom_line(linewidth = 0.75) +
+#   scale_x_continuous(breaks = seq(0, 60, by = 10)) +
+#   labs(title = "ZIBB GAMLSS Prediction", x = "Total Procrastination", y = "Prediction") +
+#   theme_minimal() +
+#   ggeasy::easy_center_title() +
+#   ggeasy::easy_remove_legend_title() +
+#   ggeasy::easy_move_legend(to = "bottom") +
+#   colorspace::scale_color_discrete_qualitative(palette = "Dark 3")
+```
+
