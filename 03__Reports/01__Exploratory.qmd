@@ -206,7 +206,7 @@ gamlss_data <- health_data %>%
 #### Model Output
 ```{r bb-linear}
 fit_1 <- gamlss(
-  formula = cbind(Days_no_drink, Days_drink) ~ Total_procrastination,
+  formula = cbind(Days_drink, Days_no_drink) ~ Total_procrastination,
   sigma.formula = ~ Total_procrastination,
   family = BB(mu.link = "logit", sigma.link = "log"),
   control = gamlss.control(trace = FALSE),
@@ -225,7 +225,7 @@ childsds::wormplot_gg(m = fit_1, y.limits = c(-1.5, 1.5))
 ### Cublic Spline Fit
 ```{r bb-cublic}
 fit_2 <- gamlss(
-  formula = cbind(Days_no_drink, Days_drink) ~ cs(Total_procrastination),
+  formula = cbind(Days_drink, Days_no_drink) ~ cs(Total_procrastination),
   sigma.formula = ~ Total_procrastination,
   family = BB(mu.link = "logit", sigma.link = "log"),
   control = gamlss.control(trace = FALSE),
@@ -244,7 +244,7 @@ childsds::wormplot_gg(m = fit_2, y.limits = c(-1.5, 1.5))
 ### Penalised Regression Fit
 ```{r bb-penalised}
 fit_3 <- gamlss(
-  formula = cbind(Days_no_drink, Days_drink) ~ pb(Total_procrastination),
+  formula = cbind(Days_drink, Days_no_drink) ~ pb(Total_procrastination),
   sigma.formula = ~ Total_procrastination,
   family = BB(mu.link = "logit"),
   control = gamlss.control(trace = FALSE),
@@ -308,12 +308,12 @@ plotting_data <- health_data %>%
 ggplot(data = new_data, aes(x = Total_procrastination, y = Value, colour = Model)) +
   geom_line(linewidth = 1.5) +
   geom_jitter(data = health_data, 
-              aes(x = Total_procrastination, y = Days_no_drink / 7, colour = NULL),
+              aes(x = Total_procrastination, y = Days_drink / 7, colour = NULL),
               height = 0.05, width = 0.05, size = 1.25, alpha = 0.8) +
   scale_x_continuous(breaks = seq(0, 60, by = 10), labels = scales::comma) +
   labs(title = "BB GAMLSS Prediction",
        x = "Total Procrastination",
-       y = "Prob(Not Drinking)") +
+       y = "Prob(Drinking)") +
   facet_wrap(~ Model) +
   theme_minimal() +
   ggeasy::easy_center_title() +
@@ -329,12 +329,12 @@ ggplot(data = new_data, aes(x = Total_procrastination, y = Value, colour = Model
 ggplot(data = new_data, aes(x = Total_procrastination, y = Value, colour = Model)) +
   geom_line(linewidth = 1.25) +
   geom_point(data = plotting_data, 
-             aes(x = Total_procrastination, y = Days_not_drinking / 7, colour = NULL),
+             aes(x = Total_procrastination, y = Days_drinking / 7, colour = NULL),
              size = 2) +
   scale_x_continuous(breaks = seq(0, 60, by = 10), labels = scales::comma) +
   labs(title = "BB GAMLSS Prediction",
        x = "Total Procrastination",
-       y = "Prob(Not Drinking [MEAN])") +
+       y = "Prob(Drinking [MEAN])") +
   facet_wrap(~ Model) +
   theme_minimal() +
   ggeasy::easy_center_title() +
